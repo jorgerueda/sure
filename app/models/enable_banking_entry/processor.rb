@@ -23,6 +23,12 @@ class EnableBankingEntry::Processor
   # inside "NAME IT" -- a real chain name observed in this issue's own data).
   MIN_KNOWN_MERCHANT_MATCH_LENGTH = 3
 
+  # Some ASPSPs populate the counterparty or transaction-code description with
+  # technical placeholders instead of a payee.  These values are still useful as
+  # a last resort, but they must not win over descriptive remittance text.
+  GENERIC_BANK_DESCRIPTIONS = /\A(?:banca online|online banking)\z/i
+  NUMERIC_COUNTERPARTY = /\A\d+\z/
+
   # enable_banking_transaction is the raw hash fetched from Enable Banking API
   # Transaction structure from Enable Banking:
   # {
@@ -125,25 +131,30 @@ class EnableBankingEntry::Processor
 
     def name
       # Build name from available Enable Banking transaction fields
-      # Priority: counterparty name > bank_transaction_code description > remittance_information
+      # Priority: human-readable counterparty > descriptive bank transaction code
+      # > remittance information. Technical placeholders never win over remittance.
 
       counterparty = counterparty_name
-      return counterparty if counterparty.present? && !technical_card_counterparty?(counterparty)
+      return counterparty if counterparty.present? && !technical_counterparty?(counterparty)
 
-      # Some institutions (e.g. Wise) use technical CARD-* identifiers as counterparties
-      # Prefer remittance_information first in that case since it contains the real merchant label for Wise
-      if technical_card_counterparty?(counterparty)
+      # Some institutions use technical CARD-* or numeric identifiers as counterparties.
+      # Prefer remittance_information first in that case since it contains the real payee.
+      if technical_counterparty?(counterparty)
         remittance = primary_remittance_information
         return remittance.truncate(100) if remittance.present?
       end
 
       # Fall back to bank_transaction_code description
       bank_tx_description = data.dig(:bank_transaction_code, :description)
-      return bank_tx_description if bank_tx_description.present?
+      return bank_tx_description if bank_tx_description.present? && !generic_bank_description?(bank_tx_description)
 
       # Fall back to remittance_information
       remittance = primary_remittance_information
       return remittance.truncate(100) if remittance.present?
+
+      # Preserve technical values when the provider supplied nothing better.
+      return counterparty if counterparty.present?
+      return bank_tx_description if bank_tx_description.present?
 
       # Final fallback: use transaction type indicator
       credit_debit_indicator == "CRDT" ? "Incoming Transfer" : "Outgoing Transfer"
@@ -244,6 +255,17 @@ class EnableBankingEntry::Processor
       value.to_s.strip.match?(/\ACARD-\d+\z/i)
     end
 
+    def technical_counterparty?(value)
+      normalized = value.to_s.strip
+      technical_card_counterparty?(normalized) ||
+        normalized.match?(NUMERIC_COUNTERPARTY) ||
+        generic_bank_description?(normalized)
+    end
+
+    def generic_bank_description?(value)
+      value.to_s.strip.match?(GENERIC_BANK_DESCRIPTIONS)
+    end
+
     def primary_remittance_information
       lines = remittance_information_lines
       descriptive = lines.find { |line| !technical_remittance_line?(line) } || lines.first
@@ -315,7 +337,7 @@ class EnableBankingEntry::Processor
 
     def merchant_name_candidate
       counterparty = counterparty_name.to_s.strip
-      return counterparty if counterparty.present? && !technical_card_counterparty?(counterparty)
+      return counterparty if counterparty.present? && !technical_counterparty?(counterparty)
 
       remittance = primary_remittance_information
       return nil if remittance.blank?

@@ -511,6 +511,55 @@ class EnableBankingEntry::ProcessorTest < ActiveSupport::TestCase
     assert_equal "ACME SHOP", name
   end
 
+  test "uses remittance instead of a numeric counterparty from ING" do
+    name = build_name(
+      credit_debit_indicator: "DBIT",
+      creditor_name: "1730572718",
+      remittance_information: [ "Recibo PayPal (Europe) S.a.r.l. et Cie., S.C.A." ],
+      bank_transaction_code: { description: "Banca online" }
+    )
+
+    assert_equal "Recibo PayPal (Europe) S.a.r.l. et Cie., S.C.A.", name
+  end
+
+  test "uses remittance instead of a generic ING bank description" do
+    name = build_name(
+      credit_debit_indicator: "DBIT",
+      creditor_name: nil,
+      remittance_information: [ "Pago en Glovo 22MAY MFH4UM9P" ],
+      bank_transaction_code: { description: "Banca online" }
+    )
+
+    assert_equal "Pago en Glovo 22MAY MFH4UM9P", name
+  end
+
+  test "keeps technical provider values when no remittance is available" do
+    numeric_name = build_name(
+      credit_debit_indicator: "DBIT",
+      creditor_name: "1730572718",
+      bank_transaction_code: { description: "Banca online" }
+    )
+    generic_name = build_name(
+      credit_debit_indicator: "DBIT",
+      creditor_name: nil,
+      bank_transaction_code: { description: "Banca online" }
+    )
+
+    assert_equal "1730572718", numeric_name
+    assert_equal "Banca online", generic_name
+  end
+
+  test "does not treat an alphanumeric counterparty as technical" do
+    name = build_name(
+      credit_debit_indicator: "DBIT",
+      creditor_name: "7-Eleven",
+      remittance_information: [ "Card purchase" ],
+      bank_transaction_code: { description: "Banca online" }
+    )
+
+    assert_equal "7-Eleven", name
+  end
+
   test "falls back to top-level counterparty name when nested name is blank" do
     processor = build_processor(
       credit_debit_indicator: "CRDT",
